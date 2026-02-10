@@ -1,0 +1,4 @@
+[workspace]
+members = ["gpu_long_arith"
+, "min_viable_prover"]
+resolver = "3" 
