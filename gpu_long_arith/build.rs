@@ -15,6 +15,7 @@ fn main() {
     nvcc.flag(&arch);
     nvcc.files([
         "./cuda/mult.cu",
+        "./cuda/mult_opt.cu",
     ]);
     nvcc.compile("ingo_challenge");
 }

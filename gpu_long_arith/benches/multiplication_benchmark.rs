@@ -1,7 +1,7 @@
 extern crate criterion;
 
 use criterion::{criterion_group, criterion_main, Criterion};
-use gpu_long_arith::{BigInt256, sample_random_bigints256, multiply_cuda};
+use gpu_long_arith::{BigInt256, sample_random_bigints256, multiply_cuda, multiply_cuda_opt};
 use rustacuda::prelude::DeviceBuffer;
 
 
@@ -23,9 +23,16 @@ fn bench(c: &mut Criterion) {
     let mut b_device = DeviceBuffer::from_slice(&b_bigint[..]).unwrap();
 
     c.bench_function(
-        &format!("Benchmarking multiplication of size {}", SIZE),
+        &format!("baseline size {}", SIZE),
         |b| b.iter(|| {
             multiply_cuda(&mut a_device, &mut b_device, SIZE, true);
+        }),
+    );
+
+    c.bench_function(
+        &format!("row_opt size {}", SIZE),
+        |b| b.iter(|| {
+            multiply_cuda_opt(&mut a_device, &mut b_device, SIZE, true);
         }),
     );
 }
