@@ -82,47 +82,28 @@ const int TLC = 8;
 static __device__ __forceinline__ void multiply_raw_device(const bigint &as, const bigint &bs, bigint_wide &rs) {
     const uint32_t *a = as.limbs;
     const uint32_t *b = bs.limbs;
-    const int i = threadIdx.x % TLC;
     uint32_t cols[TLC * 2] = {0};
 
-    // low terms
-    cols[i] = ptx::mad_lo_cc(a[0], b[i], 0);
     #pragma unroll
-    for (size_t j = 1; j < TLC; j++)
-        cols[i + j] = ptx::madc_lo_cc(a[j], b[i], cols[i + j]);
-    cols[i + TLC] = ptx::addc(0, 0);
-
-    // high terms
-    cols[i + 1] = ptx::mad_hi_cc(a[0], b[i], cols[i + 1]);
-    #pragma unroll
-    for (size_t j = 1; j < TLC - 1; j++)
-        cols[i + j + 1] = ptx::madc_hi_cc(a[j], b[i], cols[i + j + 1]);
-    cols[i + TLC] = ptx::madc_hi(a[TLC - 1], b[i], cols[i + TLC]);
-
-    // reduce to get final cols
-    #pragma unroll
-    for (size_t stride = 1; stride <= 4; stride*=2) {
-        uint32_t nb[TLC * 2];
-
+    for (int i = 0; i < TLC; i++) {
+        // low terms
+        cols[i] = ptx::mad_lo_cc(a[0], b[i], cols[i]);
         #pragma unroll
-        for (size_t j = 0; j < TLC * 2; j++) {
-            nb[j] = __shfl_down_sync(0xFFFFFFFF, cols[j], stride, TLC);
-        }
+        for (size_t j = 1; j < TLC; j++)
+            cols[i + j] = ptx::madc_lo_cc(a[j], b[i], cols[i + j]);
+        cols[i + TLC] = ptx::addc(cols[i + TLC], 0);
 
-        cols[0] = ptx::add_cc(nb[0], cols[0]);
-        #pragma unroll 
-        for (size_t j = 1; j < TLC * 2 - 1; j++) {
-            cols[j] = ptx::addc_cc(nb[j], cols[j]);
-        }
-        cols[TLC * 2 - 1] = ptx::addc(nb[TLC * 2 - 1], cols[TLC * 2 - 1]);
+        // high terms
+        cols[i + 1] = ptx::mad_hi_cc(a[0], b[i], cols[i + 1]);
+        #pragma unroll
+        for (size_t j = 1; j < TLC - 1; j++)
+            cols[i + j + 1] = ptx::madc_hi_cc(a[j], b[i], cols[i + j + 1]);
+        cols[i + TLC] = ptx::madc_hi(a[TLC - 1], b[i], cols[i + TLC]);
     }
 
-    if (i == 0)  {
-        #pragma unroll 
-        for (size_t c = 0; c < TLC * 2; c++) {
-            rs.limbs[c] = cols[c];
-        }
-    }
+    #pragma unroll
+    for (size_t c = 0; c < TLC * 2; c++)
+        rs.limbs[c] = cols[c];
 }
 
 static __device__ __forceinline__ void add_limbs_device(const uint32_t *x, const uint32_t *y, uint32_t *r) {
@@ -147,20 +128,16 @@ template <int N>
 __global__ void multVectorsKernel(bigint *in1, const bigint *in2, bigint_wide *out, size_t n)
 {
     int tid = blockDim.x * blockIdx.x + threadIdx.x;
-    if (tid / TLC < n)
+    if (tid < n)
     {
-        bigint i1 = in1[tid / TLC];
-        const bigint i2 = in2[tid / TLC];
+        bigint i1 = in1[tid];
+        const bigint i2 = in2[tid];
         bigint_wide o = {0};
         for (int i = 0; i < N - 1; i++) {
             multiply_raw_device(i1, i2, o);
             i1 = get_256_bit_result(o);
-            #pragma unroll
-            for (size_t c = 0; c < TLC; c++) {
-                i1.limbs[c] = __shfl_sync(0xFFFFFFFF, i1.limbs[c], 0, TLC);
-            }
         }
-        multiply_raw_device(i1, i2, out[tid / TLC]);
+        multiply_raw_device(i1, i2, out[tid]);
     }
 }
 
@@ -169,7 +146,7 @@ int mult_vectors(bigint in1[], const bigint in2[], bigint_wide *out, size_t n)
 {
     // Set the grid and block dimensions
     int threads_per_block = 128;
-    int num_blocks = (n * TLC + threads_per_block - 1) / threads_per_block + 1;
+    int num_blocks = (n + threads_per_block - 1) / threads_per_block + 1;
 
     multVectorsKernel<N><<<num_blocks, threads_per_block>>>(in1, in2, out, n);
 
