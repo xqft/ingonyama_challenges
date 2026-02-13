@@ -23,45 +23,9 @@ namespace ptx {
         return result;
     }
 
-    __device__ __forceinline__ uint32_t mul_lo(const uint32_t x, const uint32_t y) {
-        uint32_t result;
-        asm("mul.lo.u32 %0, %1, %2;" : "=r"(result) : "r"(x), "r"(y));
-        return result;
-    }
-
-    __device__ __forceinline__ uint32_t mul_hi(const uint32_t x, const uint32_t y) {
-        uint32_t result;
-        asm("mul.hi.u32 %0, %1, %2;" : "=r"(result) : "r"(x), "r"(y));
-        return result;
-    }
-
-    __device__ __forceinline__ uint32_t mad_lo_cc(const uint32_t x, const uint32_t y, const uint32_t z) {
-        uint32_t result;
-        asm volatile("mad.lo.cc.u32 %0, %1, %2, %3;" : "=r"(result) : "r"(x), "r"(y), "r"(z));
-        return result;
-    }
-
-    __device__ __forceinline__ uint32_t mad_hi_cc(const uint32_t x, const uint32_t y, const uint32_t z) {
-        uint32_t result;
-        asm volatile("mad.hi.cc.u32 %0, %1, %2, %3;" : "=r"(result) : "r"(x), "r"(y), "r"(z));
-        return result;
-    }
-
-    __device__ __forceinline__ uint32_t madc_lo_cc(const uint32_t x, const uint32_t y, const uint32_t z) {
-        uint32_t result;
-        asm volatile("madc.lo.cc.u32 %0, %1, %2, %3;" : "=r"(result) : "r"(x), "r"(y), "r"(z));
-        return result;
-    }
-
-    __device__ __forceinline__ uint32_t madc_hi_cc(const uint32_t x, const uint32_t y, const uint32_t z) {
-        uint32_t result;
-        asm volatile("madc.hi.cc.u32 %0, %1, %2, %3;" : "=r"(result) : "r"(x), "r"(y), "r"(z));
-        return result;
-    }
-
-    __device__ __forceinline__ uint32_t madc_hi(const uint32_t x, const uint32_t y, const uint32_t z) {
-        uint32_t result;
-        asm volatile("madc.hi.u32 %0, %1, %2, %3;" : "=r"(result) : "r"(x), "r"(y), "r"(z));
+    __device__ __forceinline__ uint64_t mad_wide(const uint32_t x, const uint32_t y, const uint64_t z) {
+        uint64_t result;
+        asm("mad.wide.u32 %0, %1, %2, %3;" : "=l"(result) : "r"(x), "r"(y), "l"(z));
         return result;
     }
 
@@ -86,19 +50,14 @@ static __device__ __forceinline__ void multiply_raw_device(const bigint &as, con
 
     #pragma unroll
     for (int i = 0; i < TLC; i++) {
-        // low terms
-        cols[i] = ptx::mad_lo_cc(a[0], b[i], cols[i]);
+        uint64_t acc = 0;
         #pragma unroll
-        for (size_t j = 1; j < TLC; j++)
-            cols[i + j] = ptx::madc_lo_cc(a[j], b[i], cols[i + j]);
-        cols[i + TLC] = ptx::addc(cols[i + TLC], 0);
-
-        // high terms
-        cols[i + 1] = ptx::mad_hi_cc(a[0], b[i], cols[i + 1]);
-        #pragma unroll
-        for (size_t j = 1; j < TLC - 1; j++)
-            cols[i + j + 1] = ptx::madc_hi_cc(a[j], b[i], cols[i + j + 1]);
-        cols[i + TLC] = ptx::madc_hi(a[TLC - 1], b[i], cols[i + TLC]);
+        for (int j = 0; j < TLC; j++) {
+            acc = ptx::mad_wide(a[j], b[i], acc + cols[i + j]);
+            cols[i + j] = (uint32_t)acc;
+            acc >>= 32;
+        }
+        cols[i + TLC] = (uint32_t)acc;
     }
 
     #pragma unroll
@@ -128,16 +87,26 @@ template <int N>
 __global__ void multVectorsKernel(bigint *in1, const bigint *in2, bigint_wide *out, size_t n)
 {
     int tid = blockDim.x * blockIdx.x + threadIdx.x;
-    if (tid < n)
+    int base = tid * 4;
+    if (base + 3 < n)
     {
-        bigint i1 = in1[tid];
-        const bigint i2 = in2[tid];
-        bigint_wide o = {0};
+        bigint a0 = in1[base], a1 = in1[base+1], a2 = in1[base+2], a3 = in1[base+3];
+        const bigint b0 = in2[base], b1 = in2[base+1], b2 = in2[base+2], b3 = in2[base+3];
+        bigint_wide o0={0}, o1={0}, o2={0}, o3={0};
         for (int i = 0; i < N - 1; i++) {
-            multiply_raw_device(i1, i2, o);
-            i1 = get_256_bit_result(o);
+            multiply_raw_device(a0, b0, o0);
+            multiply_raw_device(a1, b1, o1);
+            multiply_raw_device(a2, b2, o2);
+            multiply_raw_device(a3, b3, o3);
+            a0 = get_256_bit_result(o0);
+            a1 = get_256_bit_result(o1);
+            a2 = get_256_bit_result(o2);
+            a3 = get_256_bit_result(o3);
         }
-        multiply_raw_device(i1, i2, out[tid]);
+        multiply_raw_device(a0, b0, out[base]);
+        multiply_raw_device(a1, b1, out[base+1]);
+        multiply_raw_device(a2, b2, out[base+2]);
+        multiply_raw_device(a3, b3, out[base+3]);
     }
 }
 
@@ -146,7 +115,7 @@ int mult_vectors(bigint in1[], const bigint in2[], bigint_wide *out, size_t n)
 {
     // Set the grid and block dimensions
     int threads_per_block = 128;
-    int num_blocks = (n + threads_per_block - 1) / threads_per_block + 1;
+    int num_blocks = (n / 4 + threads_per_block - 1) / threads_per_block + 1;
 
     multVectorsKernel<N><<<num_blocks, threads_per_block>>>(in1, in2, out, n);
 

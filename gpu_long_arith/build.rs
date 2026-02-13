@@ -2,7 +2,8 @@ use std::env;
 
 fn main() {
     println!("cargo:rerun-if-env-changed=CXXFLAGS");
-    println!("cargo:rerun-if-changed=./cuda");
+    println!("cargo:rerun-if-changed=cuda/mult.cu");
+    println!("cargo:rerun-if-changed=cuda/mult_opt.cu");
 
     let arch_type = env::var("ARCH_TYPE").unwrap_or(String::from("native"));
     let mut arch = String::from("-arch=");
